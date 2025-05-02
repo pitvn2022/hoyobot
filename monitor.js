@@ -43,7 +43,6 @@ let lastStartTime  = null;
 let lastExitTime   = null;
 let autoRestart    = false;
 let lastNotify     = { UP:0, DOWN:0, RESOURCE:0 };
-let version        = 'unknown';
 
 // --- Logger ---
 function log(level,moduleName,msg){
@@ -54,7 +53,7 @@ function logError(moduleName,err){
   console.error(`${new Date().toISOString().replace('T',' ').replace(/\..+$/,'')} <ERROR:${moduleName}> ${err.stack||err.message||err}`);
 }
 
-// --- Notification helper w/ throttling ---
+// --- Notification ---
 async function notifyAll(detail,status){
   const now = Date.now();
   if (now - (lastNotify[status]||0) < THROTTLE_MINUTES*60e3) return;
@@ -63,29 +62,29 @@ async function notifyAll(detail,status){
   for(const p of config.platforms||[]){
     if (!p.active) continue;
     try {
-      if (p.type==='telegram' && p.token && p.chatId) {
+      if (p.type==='telegram'&&p.token&&p.chatId) {
         await axios.post(`https://api.telegram.org/bot${p.token}/sendMessage`, {
           chat_id: p.chatId,
           text: `*Bot Status: ${status}*\n${detail}`,
           parse_mode:'Markdown',
-          disable_notification: p.disableNotification || false,
+          disable_notification:p.disableNotification||false,
         });
       }
-      else if (p.type==='webhook' && p.url) {
+      else if (p.type==='webhook'&&p.url) {
         const embed = {
           title: `🤖 Bot Status: ${status}`,
           description: detail,
           color: status==='UP'?0x00FF00:0xFF0000,
           timestamp: new Date().toISOString(),
-          footer: { text: 'hoyolab-auto monitor' }
+          footer:{ text:'hoyolab-auto monitor' }
         };
-        await axios.post(p.url, { embeds: [embed] });
+        await axios.post(p.url,{ embeds:[embed] });
       }
     } catch(e){ logError('Monitor',e); }
   }
 }
 
-// --- Spawn bot ---
+// --- Bot lifecycle ---
 function startBot(){
   botProcess = spawn('node',['index.js'], { stdio: ['ignore','pipe','pipe'] });
   isUp = true;
@@ -103,8 +102,7 @@ function startBot(){
   });
 
   botProcess.on('exit',(code,signal)=>{
-    isUp=false;
-    lastExitTime=Date.now();
+    isUp=false; lastExitTime=Date.now();
     log('WARN','Monitor',`Bot exited code=${code} signal=${signal}`);
     notifyAll(`Exit code: ${code}, signal: ${signal}`,'DOWN').catch(e=>logError('Monitor',e));
     if(autoRestart){
@@ -117,19 +115,18 @@ function startBot(){
   });
 
   botProcess.on('error',err=>{
-    isUp=false;
-    lastExitTime=Date.now();
+    isUp=false; lastExitTime=Date.now();
     logError('Monitor',err);
     notifyAll(`Error: ${err.message}`,'DOWN').catch(e=>logError('Monitor',e));
   });
 }
 
-// --- Auto-update ---
+// --- Update ---
 function autoUpdate(){
   log('INFO','Monitor','Checking for updates (git pull)...');
   exec('git pull',(err,stdout)=>{
     if(err){ logError('Monitor',err); return; }
-    if(/Already up to date/.test(stdout)){
+    if(/Already up to date\./.test(stdout)){
       log('INFO','Monitor','No updates.');
     } else {
       log('INFO','Monitor',`Pulled:\n${stdout.trim()}`);
@@ -137,21 +134,21 @@ function autoUpdate(){
       if(botProcess&&isUp) botProcess.kill('SIGTERM');
       else startBot();
     }
-    updateVersion();
   });
-}
-function updateVersion(){
-  try {
-    version = execSync('git rev-parse --short HEAD').toString().trim();
-  } catch {
-    version = 'unknown';
-  }
 }
 setInterval(autoUpdate, UPDATE_INTERVAL_DAYS*24*60*60*1000);
 log('INFO','Monitor',`Auto-update every ${UPDATE_INTERVAL_DAYS} day(s).`);
-updateVersion();
 
-// --- Resource monitoring ---
+// --- Version info ---
+function getVersion() {
+  try {
+    return execSync('git rev-parse --short HEAD').toString().trim();
+  } catch (_) {
+    return 'unknown';
+  }
+}
+
+// --- Resources ---
 function getResources(){
   const load  = os.loadavg()[0].toFixed(2);
   const total = (os.totalmem()/1024/1024).toFixed(0);
@@ -163,16 +160,16 @@ function getResources(){
     const avail= (df[3]/1024/1024).toFixed(1);
     disk = `${used}GiB / ${(used*1+avail*1).toFixed(1)}GiB`;
   } catch(_) {}
-  if(Date.now()-lastNotify.RESOURCE > THROTTLE_MINUTES*60e3){
+  if(Date.now()-lastNotify.RESOURCE>THROTTLE_MINUTES*60e3){
     if(free/total<0.1){
       notifyAll(`Low memory: ${free}MiB free of ${total}MiB`,'RESOURCE');
-      lastNotify.RESOURCE = Date.now();
+      lastNotify.RESOURCE=Date.now();
     }
   }
   return { load, mem:`${free}MiB / ${total}MiB`, disk };
 }
 
-// --- Log tailing ---
+// --- Logs ---
 function tailLogs(){
   try {
     const data = fs.readFileSync(logFilePath,'utf-8');
@@ -183,7 +180,7 @@ function tailLogs(){
   }
 }
 
-// --- Web dashboard ---
+// --- Web UI ---
 const app = express();
 app.use(bodyParser.urlencoded({ extended:false }));
 
@@ -199,9 +196,9 @@ app.get('/',(req,res)=>{
   const since  = isUp? now-lastStartTime : now-(lastExitTime||now);
   const resinfo= getResources();
   const logs   = tailLogs().replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const version = getVersion();
 
-  res.send(`
-<!DOCTYPE html><html><head><meta charset="utf-8"/>
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>Bot Dashboard</title>
 <style>
  body{font-family:sans-serif;max-width:800px;margin:auto;padding:1rem;}
@@ -209,7 +206,6 @@ app.get('/',(req,res)=>{
  pre{background:#f4f4f4;padding:1rem;overflow:auto;height:200px;}
  table{width:100%;margin:1rem 0;border-collapse:collapse;}
  td,th{border:1px solid #ccc;padding:.5rem;text-align:left;}
- .buttons{margin:1rem 0;}
 </style></head><body>
 <h1>🖥️ Bot Health Dashboard</h1>
 <p>Status: <span class="status">${status}</span> (${formatDuration(since)})</p>
@@ -219,14 +215,8 @@ app.get('/',(req,res)=>{
  <label><input type="checkbox" name="autoRestart" value="on"
   ${autoRestart?'checked':''} onchange="this.form.submit()"/> Enable Auto-Restart</label>
 </form>
-<div class="buttons">
-  <form method="POST" action="/control/restart" style="display:inline">
-    <button>🔄 Restart Bot</button>
-  </form>
-  <form method="POST" action="/control/update" style="display:inline">
-    <button>⬇️ Pull & Update</button>
-  </form>
-</div>
+<form method="POST" action="/control/restart"><button>🔄 Restart Bot</button></form>
+<form method="POST" action="/control/update"><button>🆕 Update Now</button></form>
 <h2>📊 Resources</h2>
 <table>
  <tr><th>Load (1m)</th><td>${resinfo.load}</td></tr>
@@ -239,7 +229,7 @@ app.get('/',(req,res)=>{
 });
 
 app.post('/control/restart',(req,res)=>{
-  if(botProcess && isUp){
+  if(botProcess&&isUp){
     notifyAll('⚠️ Manual restart','DOWN');
     botProcess.kill('SIGTERM');
   }
@@ -249,15 +239,14 @@ app.post('/control/restart',(req,res)=>{
   },1000);
   res.redirect('/');
 });
-
-app.post('/control/autorestart',(req,res)=>{
-  autoRestart = req.body.autoRestart === 'on';
-  log('INFO','Monitor',`Auto-Restart → ${autoRestart}`);
+app.post('/control/update',(req,res)=>{
+  log('INFO','Monitor','Manual update requested.');
+  autoUpdate();
   res.redirect('/');
 });
-
-app.post('/control/update',(req,res)=>{
-  autoUpdate();
+app.post('/control/autorestart',(req,res)=>{
+  autoRestart = req.body.autoRestart==='on';
+  log('INFO','Monitor',`Auto-Restart → ${autoRestart}`);
   res.redirect('/');
 });
 
