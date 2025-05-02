@@ -1,5 +1,5 @@
 // monitor.js
-const { spawn, exec } = require('child_process');
+const { spawn, exec, execSync } = require('child_process');
 const express       = require('express');
 const JSON5         = require('json5');
 const fs            = require('fs');
@@ -20,6 +20,23 @@ const THROTTLE_MINUTES      = config.health?.throttleMinutes ?? 10;
 const LOG_FILE              = config.health?.logFile || 'hoyobot.log';
 const MAX_LOG_LINES         = config.health?.maxLogLines || 100;
 
+// --- Prepare log stream & override console ---
+const logFilePath = path.join(__dirname, LOG_FILE);
+const logStream   = fs.createWriteStream(logFilePath, { flags: 'a' });
+const origLog     = console.log;
+const origErr     = console.error;
+
+console.log = function(...args) {
+  const msg = args.join(' ') + '\n';
+  logStream.write(msg);
+  origLog.apply(console, args);
+};
+console.error = function(...args) {
+  const msg = args.join(' ') + '\n';
+  logStream.write(msg);
+  origErr.apply(console, args);
+};
+
 // --- State ---
 let botProcess     = null;
 let isUp           = false;
@@ -34,7 +51,7 @@ function log(level,moduleName,msg){
   console.log(`${ts} <${level}:${moduleName}> ${msg}`);
 }
 function logError(moduleName,err){
-  log('ERROR',moduleName,err.stack||err.message||err);
+  console.error(`${new Date().toISOString().replace('T',' ').replace(/\..+$/,'')} <ERROR:${moduleName}> ${err.stack||err.message||err}`);
 }
 
 // --- Notification helper w/ throttling ---
@@ -45,8 +62,8 @@ async function notifyAll(detail,status){
 
   for(const p of config.platforms||[]){
     if (!p.active) continue;
-    try{
-      if(p.type==='telegram'&&p.token&&p.chatId){
+    try {
+      if (p.type==='telegram'&&p.token&&p.chatId) {
         await axios.post(`https://api.telegram.org/bot${p.token}/sendMessage`, {
           chat_id: p.chatId,
           text: `*Bot Status: ${status}*\n${detail}`,
@@ -54,7 +71,7 @@ async function notifyAll(detail,status){
           disable_notification:p.disableNotification||false,
         });
       }
-      else if(p.type==='webhook'&&p.url){
+      else if (p.type==='webhook'&&p.url) {
         const embed = {
           title: `🤖 Bot Status: ${status}`,
           description: detail,
@@ -64,20 +81,18 @@ async function notifyAll(detail,status){
         };
         await axios.post(p.url,{ embeds:[embed] });
       }
-    }catch(e){ logError('Monitor',e); }
+    } catch(e){ logError('Monitor',e); }
   }
 }
 
-// --- Spawn bot & lifecycle, pipe logs to file ---
-const logStream = fs.createWriteStream(path.join(__dirname, LOG_FILE), { flags: 'a' });
-
+// --- Spawn bot & lifecycle ---
 function startBot(){
   botProcess = spawn('node',['index.js']);
   isUp = true; lastStartTime = Date.now();
   log('INFO','Monitor',`Bot started (pid ${botProcess.pid})`);
   notifyAll('Bot has started successfully.','UP').catch(e=>logError('Monitor',e));
 
-  // Pipe bot stdout/stderr into log file
+  // Pipe bot stdout/stderr into log file as well
   botProcess.stdout.pipe(logStream);
   botProcess.stderr.pipe(logStream);
 
@@ -87,9 +102,13 @@ function startBot(){
     notifyAll(`Exit code: ${code}, signal: ${signal}`,'DOWN').catch(e=>logError('Monitor',e));
     if(autoRestart){
       log('INFO','Monitor','Auto-restart in 5s...');
-      setTimeout(()=>{ startBot(); notifyAll('♻️ Auto-restarted.','UP'); },5000);
+      setTimeout(()=>{
+        startBot();
+        notifyAll('♻️ Auto-restarted.','UP').catch(e=>logError('Monitor',e));
+      },5000);
     }
   });
+
   botProcess.on('error',err=>{
     isUp=false; lastExitTime=Date.now();
     logError('Monitor',err);
@@ -125,7 +144,7 @@ function getResources(){
     const df = execSync('df -k .').toString().split('\n')[1].split(/\s+/);
     const used = (df[2]/1024/1024).toFixed(1);
     const avail= (df[3]/1024/1024).toFixed(1);
-    disk = `${used}GiB / ${(+used + +avail).toFixed(1)}GiB`;
+    disk = `${used}GiB / ${(used*1+avail*1).toFixed(1)}GiB`;
   } catch(_) {}
   if(Date.now()-lastNotify.RESOURCE>THROTTLE_MINUTES*60e3){
     if(free/total<0.1){
@@ -139,7 +158,7 @@ function getResources(){
 // --- Log tailing ---
 function tailLogs(){
   try {
-    const data = fs.readFileSync(path.join(__dirname, LOG_FILE),'utf-8');
+    const data = fs.readFileSync(logFilePath,'utf-8');
     const lines= data.trim().split('\n');
     return lines.slice(-MAX_LOG_LINES).join('\n');
   } catch(_) {
@@ -179,24 +198,18 @@ app.get('/',(req,res)=>{
 <p>Auto-Restart: <strong>${autoRestart?'ON':'OFF'}</strong></p>
 <form method="POST" action="/control/autorestart">
  <label><input type="checkbox" name="autoRestart" value="on"
-  ${autoRestart?'checked':''} onchange="this.form.submit()"/>
-  Enable Auto-Restart</label>
+  ${autoRestart?'checked':''} onchange="this.form.submit()"/> Enable Auto-Restart</label>
 </form>
-<form method="POST" action="/control/restart">
- <button>🔄 Restart Bot</button>
-</form>
-
+<form method="POST" action="/control/restart"><button>🔄 Restart Bot</button></form>
 <h2>📊 Resources</h2>
 <table>
  <tr><th>Load (1m)</th><td>${resinfo.load}</td></tr>
  <tr><th>Memory</th><td>${resinfo.mem}</td></tr>
  <tr><th>Disk</th><td>${resinfo.disk}</td></tr>
 </table>
-
 <h2>📝 Recent Logs (last ${MAX_LOG_LINES} lines)</h2>
 <pre>${logs}</pre>
-</body></html>
-  `);
+</body></html>`);
 });
 
 app.post('/control/restart',(req,res)=>{
