@@ -45,7 +45,7 @@ let lastNotify = { UP:0, DOWN:0, RESOURCE:0 };
 
 // --- Helpers ---
 function log(lvl,mod,msg){
-  const ts=new Date().toISOString().replace('T',' ').replace(/\..+$/,'');
+  const ts = new Date().toISOString().replace('T',' ').replace(/\..+$/,'');
   console.log(`${ts} <${lvl}:${mod}> ${msg}`);
 }
 function logError(mod,err){
@@ -56,28 +56,28 @@ function getVersion(){
   catch { return 'unknown'; }
 }
 
-// --- Notifications w/ throttle ---
+// --- Notifications with throttle ---
 async function notifyAll(detail,status){
   const now=Date.now();
   if(now - (lastNotify[status]||0) < THROTTLE_MINUTES*60e3) return;
   lastNotify[status]=now;
   for(const p of config.platforms||[]){
     if(!p.active) continue;
-    try {
+    try{
       if(p.type==='telegram'){
         await axios.post(`https://api.telegram.org/bot${p.token}/sendMessage`, {
           chat_id: p.chatId,
-          text:`*Bot Status: ${status}*\n${detail}`,
+          text: `*Bot Status: ${status}*\n${detail}`,
           parse_mode:'Markdown',
           disable_notification:p.disableNotification||false,
         });
       } else if(p.type==='webhook'){
         await axios.post(p.url,{ embeds:[{
-          title:`🤖 Bot Status: ${status}`,
-          description:detail,
-          color:status==='UP'?0x00FF00:0xFF0000,
-          timestamp:new Date().toISOString(),
-          footer:{text:'hoyolab-auto monitor'}
+          title: `🤖 Bot Status: ${status}`,
+          description: detail,
+          color: status==='UP'?0x00FF00:0xFF0000,
+          timestamp: new Date().toISOString(),
+          footer:{ text:'hoyolab-auto monitor' }
         }]});
       }
     } catch(e){ logError('Notify',e); }
@@ -87,15 +87,15 @@ async function notifyAll(detail,status){
 // --- Bot lifecycle ---
 function startBot(){
   botProcess = spawn('node',['index.js'],{stdio:['ignore','pipe','pipe']});
-  isUp=true; lastStartTime=Date.now();
-  log('INFO','Monitor',`Bot started (pid ${botProcess.pid}), version ${getVersion()}`);
+  isUp = true; lastStartTime = Date.now();
+  log('INFO','Monitor',`Bot started (pid ${botProcess.pid}), ver ${getVersion()}`);
   notifyAll('Bot started','UP');
   botProcess.stdout.on('data',d=>{ process.stdout.write(d); logStream.write(d); });
   botProcess.stderr.on('data',d=>{ process.stderr.write(d); logStream.write(d); });
-  botProcess.on('exit',(c,s)=>{
+  botProcess.on('exit',(code,signal)=>{
     isUp=false; lastExitTime=Date.now();
-    log('WARN','Monitor',`Bot exited code=${c} signal=${s}`);
-    notifyAll(`Exit code:${c}, signal:${s}`,'DOWN');
+    log('WARN','Monitor',`Bot exited code=${code} signal=${signal}`);
+    notifyAll(`Exit code:${code}, signal:${signal}`,'DOWN');
     if(autoRestart) setTimeout(startBot,5000);
   });
   botProcess.on('error',err=>{
@@ -105,14 +105,13 @@ function startBot(){
   });
 }
 
-// --- Auto-update ---
+// --- Auto-update daily ---
 function autoUpdate(){
-  log('INFO','Monitor','Auto-update check...');
   exec('git pull',(err,out)=>{
     if(err) return logError('Monitor',err);
     if(!/Already up to date/.test(out)){
       log('INFO','Monitor',`Pulled:\n${out.trim()}`);
-      notifyAll('Code updated, restarting','UP');
+      notifyAll('Code updated','UP');
       if(botProcess&&isUp) botProcess.kill('SIGTERM');
       else startBot();
     }
@@ -121,13 +120,13 @@ function autoUpdate(){
 setInterval(autoUpdate,UPDATE_INTERVAL_DAYS*86400*1000);
 log('INFO','Monitor',`Auto-update every ${UPDATE_INTERVAL_DAYS} day(s).`);
 
-// --- Manual update endpoint ---
+// --- Manual update helper ---
 function manualUpdate(){
   exec('git pull',(err,out)=>{
     if(err) return logError('Monitor',err);
     log('INFO','Monitor',`Manual pull:\n${out.trim()}`);
     if(!/Already up to date/.test(out)){
-      notifyAll('Manual update: restarted','UP');
+      notifyAll('Manual update','UP');
       if(botProcess&&isUp) botProcess.kill('SIGTERM');
       else startBot();
     }
@@ -144,11 +143,11 @@ function getResources(){
     const df=execSync('df -k .').toString().split('\n')[1].split(/\s+/);
     disk=`${(df[2]/1048576).toFixed(1)}GiB/${((+df[2]+ +df[3])/1048576).toFixed(1)}GiB`;
   }catch{}
-  return {load,mem:`${free}MiB/${total}MiB`,disk};
+  return { load, mem:`${free}MiB/${total}MiB`, disk };
 }
 function tailLogs(){
-  try{return fs.readFileSync(logFilePath,'utf-8').trim().split('\n').slice(-MAX_LOG_LINES).join('\n');}
-  catch{return 'Cannot read log file';}
+  try{ return fs.readFileSync(logFilePath,'utf-8').trim().split('\n').slice(-MAX_LOG_LINES).join('\n'); }
+  catch{ return 'Cannot read log file'; }
 }
 function formatDuration(ms){
   const s=Math.floor(ms/1e3)%60,
@@ -174,37 +173,35 @@ app.get('/',(req,res)=>{
 <html><head><meta charset="utf-8">
   <title>Bot Dashboard</title>
   <style>
-    body{font-family:sans-serif;max-width:600px;margin:auto;padding:1rem;background:#fafafa}
-    h1{margin-bottom:0.5rem}
-    .status{font-weight:bold;color:${status==='UP'?'green':'red'}}
-    .info{margin:0.5rem 0}
-    button, input[type="checkbox"]{margin-right:0.5rem}
-    .controls{margin:1rem 0}
+    body{font-family:sans-serif;max-width:600px;margin:auto;padding:1rem;background:#f5f5f5}
+    h1{margin-bottom:.5rem}
     .panel{background:#fff;padding:1rem;margin:1rem 0;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
-    pre{background:#eee;padding:0.5rem;overflow:auto;max-height:200px}
-    table{width:100%;border-collapse:collapse}
-    th,td{border:1px solid #ddd;padding:0.5rem;text-align:left}
+    .status{color:${status==='UP'?'green':'red'};font-weight:bold}
+    .controls button,input{margin-right:.5rem}
+    pre{background:#eee;padding:.5rem;overflow:auto;max-height:200px}
+    table{width:100%;border-collapse:collapse;margin-top:1rem}
+    th,td{border:1px solid #ddd;padding:.5rem;text-align:left}
   </style>
 </head><body>
-  <h1>🤖 Bot Monitor</h1>
+  <h1>🤖 Bot Monitor (v${version})</h1>
   <div class="panel">
-    <div class="info">Status: <span class="status">${status}</span> (${formatDuration(since)})</div>
-    <div class="info">Version: <code>${version}</code></div>
-    <div class="info">CPU Load: ${load} | Memory: ${mem} | Disk: ${disk}</div>
+    <div>Status: <span class="status">${status}</span> (${formatDuration(since)})</div>
+    <div>CPU Load: ${load} | Memory: ${mem} | Disk: ${disk}</div>
   </div>
-  <div class="controls panel">
-    <form style="display:inline" method="POST" action="./control/autorestart">
+  <div class="panel controls">
+    <form style="display:inline" method="POST" action="/proxy.php/control/autorestart">
       <label><input type="checkbox" name="autoRestart" value="on" ${autoRestart?'checked':''}
         onchange="this.form.submit()"> Auto-Restart</label>
     </form>
-    <form style="display:inline" method="POST" action="./control/restart">
+    <form style="display:inline" method="POST" action="/proxy.php/control/restart">
       <button>🔄 Restart</button>
     </form>
-    <form style="display:inline" method="POST" action="./control/update">
+    <form style="display:inline" method="POST" action="/proxy.php/control/update">
       <button>🆕 Update Now</button>
     </form>
   </div>
-  <div class="panel"><strong>Logs (last ${MAX_LOG_LINES} lines):</strong>
+  <div class="panel">
+    <strong>Logs (last ${MAX_LOG_LINES} lines):</strong>
     <pre>${logs}</pre>
   </div>
 </body></html>`);
@@ -214,23 +211,23 @@ app.get('/',(req,res)=>{
 app.post('/control/restart', requireAuth, (req,res)=>{
   if(botProcess&&isUp) botProcess.kill('SIGTERM');
   setTimeout(startBot,1000);
-  res.redirect(req.headers.referer||'.');
+  res.redirect('/proxy.php');
 });
 
-// Auto-restart toggle
+// Auto-restart endpoint
 app.post('/control/autorestart',(req,res)=>{
   autoRestart=req.body.autoRestart==='on';
   log('INFO','Monitor',`Auto-Restart → ${autoRestart}`);
-  res.redirect(req.headers.referer||'.');
+  res.redirect('/proxy.php');
 });
 
-// Manual update endpoint
+// Update endpoint
 app.post('/control/update', requireAuth, (req,res)=>{
   manualUpdate();
-  res.redirect(req.headers.referer||'.');
+  res.redirect('/proxy.php');
 });
 
-// Start server
+// Start server on localhost
 app.listen(PORT,'localhost',()=>{
   log('INFO','Monitor',`Server listening on http://localhost:${PORT}`);
   startBot();
