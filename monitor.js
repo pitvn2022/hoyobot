@@ -167,8 +167,8 @@ function formatDuration(ms){
   return [d&&`${d}d`, h&&`${h}h`, m&&`${m}m`, `${s}s`].filter(Boolean).join(' ');
 }
 
-// Main route (catch-all for proxy base URL)
-app.get('*', (req, res) => {
+// ✅ Sửa chỗ này: chỉ áp dụng cho root "/"
+app.get('/', (req, res) => {
   const base = req.baseUrl || '';
   const now = Date.now();
   const status = isUp ? 'UP' : 'DOWN';
