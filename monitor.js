@@ -192,7 +192,7 @@ td,th{border:1px solid #ccc;padding:.5rem;text-align:left;}
     ${autoRestart ? 'checked' : ''} onchange="this.form.submit()"/> Enable Auto-Restart</label>
 </form>
 <form method="POST" action="${base}/control/restart">
-  <button>🔄 Restart Bot</button>
+  <button type="submit">🔄 Restart Bot</button>
 </form>
 <h2>📊 Resources</h2>
 <table>
