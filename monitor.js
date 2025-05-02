@@ -45,13 +45,14 @@ let lastNotify = { UP:0, DOWN:0, RESOURCE:0 };
 
 // --- Helpers ---
 function log(lvl,mod,msg){
-  const ts=new Date().toISOString().replace('T',' ').replace(/\..+$/,'');
+  const ts = new Date().toISOString().replace('T',' ').replace(/\..+$/,'');
   console.log(`${ts} <${lvl}:${mod}> ${msg}`);
 }
 function logError(mod,err){
   console.error(`${new Date().toISOString().replace('T',' ').replace(/\..+$/,'')} <ERROR:${mod}> ${err.stack||err.message}`);
 }
 
+// --- Notifications w/ throttle ---
 async function notifyAll(detail,status){
   const now=Date.now();
   if(now - (lastNotify[status]||0) < THROTTLE_MINUTES*60e3) return;
@@ -118,9 +119,9 @@ log('INFO','Monitor',`Auto-update every ${UPDATE_INTERVAL_DAYS} day(s).`);
 
 // --- Metrics & logs ---
 function getResources(){
-  const load=os.loadavg()[0].toFixed(2),
-        total=(os.totalmem()/1048576).toFixed(0),
-        free=(os.freemem()/1048576).toFixed(0);
+  const load = os.loadavg()[0].toFixed(2);
+  const total = (os.totalmem()/1048576).toFixed(0);
+  const free  = (os.freemem()/1048576).toFixed(0);
   let disk='n/a';
   try{
     const df=execSync('df -k .').toString().split('\n')[1].split(/\s+/);
@@ -144,38 +145,47 @@ function formatDuration(ms){
 const app=express();
 app.use(express.urlencoded({extended:false}));
 
-// Dashboard at root
+// Dashboard
 app.get('/',(req,res)=>{
   const now=Date.now(), status=isUp?'UP':'DOWN';
-  const since=isUp?now-lastStartTime:now-(lastExitTime||now);
+  const since=isUp? now-lastStartTime: now-(lastExitTime||now);
   const {load,mem,disk}=getResources();
   const logs=tailLogs().replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  res.send(`<!doctype html><html><head><meta charset="utf-8"><title>Bot Dashboard</title>
-<style>body{font-family:sans-serif;max-width:800px;margin:auto;padding:1rem}
-.status{color:${status==='UP'?'green':'red'};font-size:1.5rem}
-pre{background:#eee;padding:1rem;overflow:auto;height:200px}
-table{width:100%;border-collapse:collapse}
-th,td{border:1px solid #ccc;padding:.5rem;text-align:left}
-</style></head><body>
-<h1>🤖 Bot Monitor</h1>
-<p>Status: <span class="status">${status}</span> (${formatDuration(since)})</p>
-<p>Auto-Restart: <strong>${autoRestart?'ON':'OFF'}</strong></p>
-<form method="POST" action="./control/autorestart">
-  <label><input type="checkbox" name="autoRestart" value="on" ${autoRestart?'checked':''}
-    onchange="this.form.submit()"> Enable Auto-Restart</label>
-</form>
-<form method="POST" action="./control/restart"><button>🔄 Restart Bot</button></form>
-<h2>📊 Resources</h2><table>
-<tr><th>CPU Load</th><td>${load}</td></tr>
-<tr><th>Memory</th><td>${mem}</td></tr>
-<tr><th>Disk</th><td>${disk}</td></tr>
-</table>
-<h2>📝 Logs</h2><pre>${logs}</pre>
+
+  res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+  <base href="/proxy.php/">
+  <title>Bot Dashboard</title>
+  <style>body{font-family:sans-serif;max-width:800px;margin:auto;padding:1rem}
+  .status{color:${status==='UP'?'green':'red'};font-size:1.5rem}
+  pre{background:#eee;padding:1rem;overflow:auto;height:200px}
+  table{width:100%;border-collapse:collapse}
+  th,td{border:1px solid #ccc;padding:.5rem;text-align:left}
+  </style>
+</head><body>
+  <h1>🤖 Bot Monitor</h1>
+  <p>Status: <span class="status">${status}</span> (${formatDuration(since)})</p>
+  <p>Auto-Restart: <strong>${autoRestart?'ON':'OFF'}</strong></p>
+  <form method="POST" action="./control/autorestart">
+    <label>
+      <input type="checkbox" name="autoRestart" value="on" ${autoRestart?'checked':''}
+        onchange="this.form.submit()">
+      Enable Auto-Restart
+    </label>
+  </form>
+  <form method="POST" action="./control/restart"><button>🔄 Restart Bot</button></form>
+  <h2>📊 Resources</h2>
+  <table>
+    <tr><th>CPU Load</th><td>${load}</td></tr>
+    <tr><th>Memory</th><td>${mem}</td></tr>
+    <tr><th>Disk</th><td>${disk}</td></tr>
+  </table>
+  <h2>📝 Logs</h2><pre>${logs}</pre>
 </body></html>`);
 });
 
 // Restart endpoint
-app.post('/control/restart',requireAuth,(req,res)=>{
+app.post('/control/restart', requireAuth, (req,res)=>{
   if(botProcess&&isUp) botProcess.kill('SIGTERM');
   setTimeout(startBot,1000);
   res.redirect(req.headers.referer||'.');
@@ -187,7 +197,7 @@ app.post('/control/autorestart',(req,res)=>{
   res.redirect(req.headers.referer||'.');
 });
 
-// Start server
+// Start server (localhost only)
 app.listen(PORT,'localhost',()=>{
   log('INFO','Monitor',`Server listening on http://localhost:${PORT}`);
   startBot();
