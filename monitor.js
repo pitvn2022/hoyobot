@@ -227,6 +227,7 @@ app.post('/', (req, res) => {
   res.redirect('/');
 });
 
-app.listen(PORT, () => {
-  log('INFO', 'Monitor', `Server started on port ${PORT}`);
+// Start server on localhost
+app.listen(PORT, 'localhost', () => {
+  log('INFO', 'Monitor', `Server started on http://localhost:${PORT}`);
 });
