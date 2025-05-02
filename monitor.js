@@ -14,7 +14,7 @@ const raw        = fs.readFileSync(configPath, 'utf-8');
 const config     = JSON5.parse(raw);
 
 // --- Settings ---
-const PORT                  = config.health?.port || 5010;
+const PORT                  = config.health?.port || 3001;
 const UPDATE_INTERVAL_DAYS  = config.health?.updateIntervalDays ?? 1;
 const THROTTLE_MINUTES      = config.health?.throttleMinutes ?? 10;
 const LOG_FILE              = config.health?.logFile || 'hoyobot.log';
@@ -40,7 +40,6 @@ function logError(moduleName,err){
 // --- Notification helper w/ throttling ---
 async function notifyAll(detail,status){
   const now = Date.now();
-  // throttle per status type
   if (now - (lastNotify[status]||0) < THROTTLE_MINUTES*60e3) return;
   lastNotify[status] = now;
 
@@ -69,12 +68,18 @@ async function notifyAll(detail,status){
   }
 }
 
-// --- Spawn bot & lifecycle ---
+// --- Spawn bot & lifecycle, pipe logs to file ---
+const logStream = fs.createWriteStream(path.join(__dirname, LOG_FILE), { flags: 'a' });
+
 function startBot(){
-  botProcess = spawn('node',['index.js'],{ stdio:'inherit' });
+  botProcess = spawn('node',['index.js']);
   isUp = true; lastStartTime = Date.now();
   log('INFO','Monitor',`Bot started (pid ${botProcess.pid})`);
   notifyAll('Bot has started successfully.','UP').catch(e=>logError('Monitor',e));
+
+  // Pipe bot stdout/stderr into log file
+  botProcess.stdout.pipe(logStream);
+  botProcess.stderr.pipe(logStream);
 
   botProcess.on('exit',(code,signal)=>{
     isUp=false; lastExitTime=Date.now();
@@ -112,7 +117,6 @@ log('INFO','Monitor',`Auto-update every ${UPDATE_INTERVAL_DAYS} day(s).`);
 
 // --- Resource monitoring ---
 function getResources(){
-  // CPU load avg (1m), total+free mem, disk usage via df
   const load  = os.loadavg()[0].toFixed(2);
   const total = (os.totalmem()/1024/1024).toFixed(0);
   const free  = (os.freemem()/1024/1024).toFixed(0);
@@ -121,23 +125,21 @@ function getResources(){
     const df = execSync('df -k .').toString().split('\n')[1].split(/\s+/);
     const used = (df[2]/1024/1024).toFixed(1);
     const avail= (df[3]/1024/1024).toFixed(1);
-    disk = `${used}GiB / ${+used+ +avail}GiB`;
+    disk = `${used}GiB / ${(+used + +avail).toFixed(1)}GiB`;
   } catch(_) {}
-  // throttle resource alerts
   if(Date.now()-lastNotify.RESOURCE>THROTTLE_MINUTES*60e3){
-    // example: alert if free mem <10%
     if(free/total<0.1){
       notifyAll(`Low memory: ${free}MiB free of ${total}MiB`,'RESOURCE');
       lastNotify.RESOURCE=Date.now();
     }
   }
-  return { load, mem: `${free}MiB / ${total}MiB`, disk };
+  return { load, mem:`${free}MiB / ${total}MiB`, disk };
 }
 
 // --- Log tailing ---
 function tailLogs(){
   try {
-    const data = fs.readFileSync(LOG_FILE,'utf-8');
+    const data = fs.readFileSync(path.join(__dirname, LOG_FILE),'utf-8');
     const lines= data.trim().split('\n');
     return lines.slice(-MAX_LOG_LINES).join('\n');
   } catch(_) {
