@@ -26,6 +26,7 @@ const logStream   = fs.createWriteStream(logFilePath, { flags: 'a' });
 const origLog     = console.log;
 const origErr     = console.error;
 
+// Khi gọi console.log/error, đồng thời ghi vào file
 console.log = function(...args) {
   const msg = args.join(' ') + '\n';
   logStream.write(msg);
@@ -85,16 +86,24 @@ async function notifyAll(detail,status){
   }
 }
 
-// --- Spawn bot & lifecycle ---
+// --- Spawn bot & lifecycle, pipe logs to both console & file ---
 function startBot(){
-  botProcess = spawn('node',['index.js']);
-  isUp = true; lastStartTime = Date.now();
+  botProcess = spawn('node',['index.js'], { stdio: ['ignore','pipe','pipe'] });
+  isUp = true;
+  lastStartTime = Date.now();
   log('INFO','Monitor',`Bot started (pid ${botProcess.pid})`);
   notifyAll('Bot has started successfully.','UP').catch(e=>logError('Monitor',e));
 
-  // Pipe bot stdout/stderr into log file as well
-  botProcess.stdout.pipe(logStream);
-  botProcess.stderr.pipe(logStream);
+  // Bot stdout → console + file
+  botProcess.stdout.on('data', data => {
+    process.stdout.write(data);
+    logStream.write(data);
+  });
+  // Bot stderr → console.error + file
+  botProcess.stderr.on('data', data => {
+    process.stderr.write(data);
+    logStream.write(data);
+  });
 
   botProcess.on('exit',(code,signal)=>{
     isUp=false; lastExitTime=Date.now();
@@ -177,7 +186,7 @@ function formatDuration(ms){
 }
 
 app.get('/',(req,res)=>{
-  const now = Date.now();
+  const now    = Date.now();
   const status = isUp?'UP':'DOWN';
   const since  = isUp? now-lastStartTime : now-(lastExitTime||now);
   const resinfo= getResources();
@@ -217,7 +226,10 @@ app.post('/control/restart',(req,res)=>{
     notifyAll('⚠️ Manual restart','DOWN');
     botProcess.kill('SIGTERM');
   }
-  setTimeout(()=>{ startBot(); notifyAll('🔄 Manually restarted','UP'); },1000);
+  setTimeout(()=>{
+    startBot();
+    notifyAll('🔄 Manually restarted','UP');
+  },1000);
   res.redirect('/');
 });
 app.post('/control/autorestart',(req,res)=>{
