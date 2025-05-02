@@ -205,22 +205,22 @@ td,th{border:1px solid #ccc;padding:.5rem;text-align:left;}
 </body></html>`);
 });
 
-app.post('*/control/restart', requireAuth, (req, res) => {
-  if (botProcess && isUp) {
-    notifyAll('⚠️ Manual restart', 'DOWN');
+app.post('/control/restart', requireAuth, (req,res)=>{
+  if(botProcess&&isUp){
+    notifyAll('⚠️ Manual restart','DOWN');
     botProcess.kill('SIGTERM');
   }
-  setTimeout(() => {
+  setTimeout(()=>{
     startBot();
-    notifyAll('🔄 Manually restarted', 'UP');
-  }, 1000);
-  res.redirect(req.baseUrl || '/');
+    notifyAll('🔄 Manually restarted','UP');
+  },1000);
+  res.redirect(req.headers['referer'] || '/');
 });
 
-app.post('*/control/autorestart', (req, res) => {
-  autoRestart = req.body.autoRestart === 'on';
-  log('INFO', 'Monitor', `Auto-Restart → ${autoRestart}`);
-  res.redirect(req.baseUrl || '/');
+app.post('/control/autorestart',(req,res)=>{
+  autoRestart = req.body.autoRestart==='on';
+  log('INFO','Monitor',`Auto-Restart → ${autoRestart}`);
+  res.redirect(req.headers['referer'] || '/');
 });
 
 app.listen(PORT, () => {
