@@ -1,4 +1,3 @@
-// monitor.js
 const { spawn, exec, execSync } = require('child_process');
 const express       = require('express');
 const JSON5         = require('json5');
@@ -26,7 +25,6 @@ const logStream   = fs.createWriteStream(logFilePath, { flags: 'a' });
 const origLog     = console.log;
 const origErr     = console.error;
 
-// Khi gọi console.log/error, đồng thời ghi vào file
 console.log = function(...args) {
   const msg = args.join(' ') + '\n';
   logStream.write(msg);
@@ -45,8 +43,9 @@ let lastStartTime  = null;
 let lastExitTime   = null;
 let autoRestart    = false;
 let lastNotify     = { UP:0, DOWN:0, RESOURCE:0 };
+let version        = 'unknown';
 
-// --- Logger (bot style) ---
+// --- Logger ---
 function log(level,moduleName,msg){
   const ts = new Date().toISOString().replace('T',' ').replace(/\..+$/,'');
   console.log(`${ts} <${level}:${moduleName}> ${msg}`);
@@ -64,29 +63,29 @@ async function notifyAll(detail,status){
   for(const p of config.platforms||[]){
     if (!p.active) continue;
     try {
-      if (p.type==='telegram'&&p.token&&p.chatId) {
+      if (p.type==='telegram' && p.token && p.chatId) {
         await axios.post(`https://api.telegram.org/bot${p.token}/sendMessage`, {
           chat_id: p.chatId,
           text: `*Bot Status: ${status}*\n${detail}`,
           parse_mode:'Markdown',
-          disable_notification:p.disableNotification||false,
+          disable_notification: p.disableNotification || false,
         });
       }
-      else if (p.type==='webhook'&&p.url) {
+      else if (p.type==='webhook' && p.url) {
         const embed = {
           title: `🤖 Bot Status: ${status}`,
           description: detail,
           color: status==='UP'?0x00FF00:0xFF0000,
           timestamp: new Date().toISOString(),
-          footer:{ text:'hoyolab-auto monitor' }
+          footer: { text: 'hoyolab-auto monitor' }
         };
-        await axios.post(p.url,{ embeds:[embed] });
+        await axios.post(p.url, { embeds: [embed] });
       }
     } catch(e){ logError('Monitor',e); }
   }
 }
 
-// --- Spawn bot & lifecycle, pipe logs to both console & file ---
+// --- Spawn bot ---
 function startBot(){
   botProcess = spawn('node',['index.js'], { stdio: ['ignore','pipe','pipe'] });
   isUp = true;
@@ -94,19 +93,18 @@ function startBot(){
   log('INFO','Monitor',`Bot started (pid ${botProcess.pid})`);
   notifyAll('Bot has started successfully.','UP').catch(e=>logError('Monitor',e));
 
-  // Bot stdout → console + file
   botProcess.stdout.on('data', data => {
     process.stdout.write(data);
     logStream.write(data);
   });
-  // Bot stderr → console.error + file
   botProcess.stderr.on('data', data => {
     process.stderr.write(data);
     logStream.write(data);
   });
 
   botProcess.on('exit',(code,signal)=>{
-    isUp=false; lastExitTime=Date.now();
+    isUp=false;
+    lastExitTime=Date.now();
     log('WARN','Monitor',`Bot exited code=${code} signal=${signal}`);
     notifyAll(`Exit code: ${code}, signal: ${signal}`,'DOWN').catch(e=>logError('Monitor',e));
     if(autoRestart){
@@ -119,18 +117,19 @@ function startBot(){
   });
 
   botProcess.on('error',err=>{
-    isUp=false; lastExitTime=Date.now();
+    isUp=false;
+    lastExitTime=Date.now();
     logError('Monitor',err);
     notifyAll(`Error: ${err.message}`,'DOWN').catch(e=>logError('Monitor',e));
   });
 }
 
-// --- Auto-update daily ---
+// --- Auto-update ---
 function autoUpdate(){
   log('INFO','Monitor','Checking for updates (git pull)...');
   exec('git pull',(err,stdout)=>{
     if(err){ logError('Monitor',err); return; }
-    if(/Already up to date\./.test(stdout)){
+    if(/Already up to date/.test(stdout)){
       log('INFO','Monitor','No updates.');
     } else {
       log('INFO','Monitor',`Pulled:\n${stdout.trim()}`);
@@ -138,10 +137,19 @@ function autoUpdate(){
       if(botProcess&&isUp) botProcess.kill('SIGTERM');
       else startBot();
     }
+    updateVersion();
   });
+}
+function updateVersion(){
+  try {
+    version = execSync('git rev-parse --short HEAD').toString().trim();
+  } catch {
+    version = 'unknown';
+  }
 }
 setInterval(autoUpdate, UPDATE_INTERVAL_DAYS*24*60*60*1000);
 log('INFO','Monitor',`Auto-update every ${UPDATE_INTERVAL_DAYS} day(s).`);
+updateVersion();
 
 // --- Resource monitoring ---
 function getResources(){
@@ -155,10 +163,10 @@ function getResources(){
     const avail= (df[3]/1024/1024).toFixed(1);
     disk = `${used}GiB / ${(used*1+avail*1).toFixed(1)}GiB`;
   } catch(_) {}
-  if(Date.now()-lastNotify.RESOURCE>THROTTLE_MINUTES*60e3){
+  if(Date.now()-lastNotify.RESOURCE > THROTTLE_MINUTES*60e3){
     if(free/total<0.1){
       notifyAll(`Low memory: ${free}MiB free of ${total}MiB`,'RESOURCE');
-      lastNotify.RESOURCE=Date.now();
+      lastNotify.RESOURCE = Date.now();
     }
   }
   return { load, mem:`${free}MiB / ${total}MiB`, disk };
@@ -175,7 +183,7 @@ function tailLogs(){
   }
 }
 
-// --- Express dashboard ---
+// --- Web dashboard ---
 const app = express();
 app.use(bodyParser.urlencoded({ extended:false }));
 
@@ -201,15 +209,24 @@ app.get('/',(req,res)=>{
  pre{background:#f4f4f4;padding:1rem;overflow:auto;height:200px;}
  table{width:100%;margin:1rem 0;border-collapse:collapse;}
  td,th{border:1px solid #ccc;padding:.5rem;text-align:left;}
+ .buttons{margin:1rem 0;}
 </style></head><body>
 <h1>🖥️ Bot Health Dashboard</h1>
 <p>Status: <span class="status">${status}</span> (${formatDuration(since)})</p>
+<p>Version: <strong>${version}</strong></p>
 <p>Auto-Restart: <strong>${autoRestart?'ON':'OFF'}</strong></p>
 <form method="POST" action="/control/autorestart">
  <label><input type="checkbox" name="autoRestart" value="on"
   ${autoRestart?'checked':''} onchange="this.form.submit()"/> Enable Auto-Restart</label>
 </form>
-<form method="POST" action="/control/restart"><button>🔄 Restart Bot</button></form>
+<div class="buttons">
+  <form method="POST" action="/control/restart" style="display:inline">
+    <button>🔄 Restart Bot</button>
+  </form>
+  <form method="POST" action="/control/update" style="display:inline">
+    <button>⬇️ Pull & Update</button>
+  </form>
+</div>
 <h2>📊 Resources</h2>
 <table>
  <tr><th>Load (1m)</th><td>${resinfo.load}</td></tr>
@@ -222,7 +239,7 @@ app.get('/',(req,res)=>{
 });
 
 app.post('/control/restart',(req,res)=>{
-  if(botProcess&&isUp){
+  if(botProcess && isUp){
     notifyAll('⚠️ Manual restart','DOWN');
     botProcess.kill('SIGTERM');
   }
@@ -232,9 +249,15 @@ app.post('/control/restart',(req,res)=>{
   },1000);
   res.redirect('/');
 });
+
 app.post('/control/autorestart',(req,res)=>{
-  autoRestart = req.body.autoRestart==='on';
+  autoRestart = req.body.autoRestart === 'on';
   log('INFO','Monitor',`Auto-Restart → ${autoRestart}`);
+  res.redirect('/');
+});
+
+app.post('/control/update',(req,res)=>{
+  autoUpdate();
   res.redirect('/');
 });
 
