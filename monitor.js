@@ -13,7 +13,7 @@ const configPath = path.join(__dirname, 'config.json5');
 const raw        = fs.readFileSync(configPath, 'utf-8');
 const config     = JSON5.parse(raw);
 
-// --- Basic Auth for restart ---
+// --- Basic Auth for restart/update ---
 const AUTH = config.health?.auth || { user: 'admin', pass: 'password' };
 function requireAuth(req, res, next) {
   const creds = basicAuth(req);
@@ -45,11 +45,15 @@ let lastNotify = { UP:0, DOWN:0, RESOURCE:0 };
 
 // --- Helpers ---
 function log(lvl,mod,msg){
-  const ts = new Date().toISOString().replace('T',' ').replace(/\..+$/,'');
+  const ts=new Date().toISOString().replace('T',' ').replace(/\..+$/,'');
   console.log(`${ts} <${lvl}:${mod}> ${msg}`);
 }
 function logError(mod,err){
   console.error(`${new Date().toISOString().replace('T',' ').replace(/\..+$/,'')} <ERROR:${mod}> ${err.stack||err.message}`);
+}
+function getVersion(){
+  try { return execSync('git rev-parse --short HEAD').toString().trim(); }
+  catch { return 'unknown'; }
 }
 
 // --- Notifications w/ throttle ---
@@ -84,7 +88,7 @@ async function notifyAll(detail,status){
 function startBot(){
   botProcess = spawn('node',['index.js'],{stdio:['ignore','pipe','pipe']});
   isUp=true; lastStartTime=Date.now();
-  log('INFO','Monitor',`Bot started (pid ${botProcess.pid})`);
+  log('INFO','Monitor',`Bot started (pid ${botProcess.pid}), version ${getVersion()}`);
   notifyAll('Bot started','UP');
   botProcess.stdout.on('data',d=>{ process.stdout.write(d); logStream.write(d); });
   botProcess.stderr.on('data',d=>{ process.stderr.write(d); logStream.write(d); });
@@ -103,12 +107,12 @@ function startBot(){
 
 // --- Auto-update ---
 function autoUpdate(){
-  log('INFO','Monitor','Checking for updates...');
+  log('INFO','Monitor','Auto-update check...');
   exec('git pull',(err,out)=>{
     if(err) return logError('Monitor',err);
     if(!/Already up to date/.test(out)){
       log('INFO','Monitor',`Pulled:\n${out.trim()}`);
-      notifyAll('Code updated','UP');
+      notifyAll('Code updated, restarting','UP');
       if(botProcess&&isUp) botProcess.kill('SIGTERM');
       else startBot();
     }
@@ -117,17 +121,30 @@ function autoUpdate(){
 setInterval(autoUpdate,UPDATE_INTERVAL_DAYS*86400*1000);
 log('INFO','Monitor',`Auto-update every ${UPDATE_INTERVAL_DAYS} day(s).`);
 
+// --- Manual update endpoint ---
+function manualUpdate(){
+  exec('git pull',(err,out)=>{
+    if(err) return logError('Monitor',err);
+    log('INFO','Monitor',`Manual pull:\n${out.trim()}`);
+    if(!/Already up to date/.test(out)){
+      notifyAll('Manual update: restarted','UP');
+      if(botProcess&&isUp) botProcess.kill('SIGTERM');
+      else startBot();
+    }
+  });
+}
+
 // --- Metrics & logs ---
 function getResources(){
-  const load = os.loadavg()[0].toFixed(2);
-  const total = (os.totalmem()/1048576).toFixed(0);
-  const free  = (os.freemem()/1048576).toFixed(0);
+  const load=os.loadavg()[0].toFixed(2),
+        total=(os.totalmem()/1048576).toFixed(0),
+        free=(os.freemem()/1048576).toFixed(0);
   let disk='n/a';
   try{
     const df=execSync('df -k .').toString().split('\n')[1].split(/\s+/);
-    disk=`${(df[2]/1048576).toFixed(1)}GiB / ${((+df[2]+ +df[3])/1048576).toFixed(1)}GiB`;
+    disk=`${(df[2]/1048576).toFixed(1)}GiB/${((+df[2]+ +df[3])/1048576).toFixed(1)}GiB`;
   }catch{}
-  return {load,mem:`${free}MiB / ${total}MiB`,disk};
+  return {load,mem:`${free}MiB/${total}MiB`,disk};
 }
 function tailLogs(){
   try{return fs.readFileSync(logFilePath,'utf-8').trim().split('\n').slice(-MAX_LOG_LINES).join('\n');}
@@ -151,36 +168,45 @@ app.get('/',(req,res)=>{
   const since=isUp? now-lastStartTime: now-(lastExitTime||now);
   const {load,mem,disk}=getResources();
   const logs=tailLogs().replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const version=getVersion();
 
-  res.send(`<!DOCTYPE html>
+  res.send(`<!doctype html>
 <html><head><meta charset="utf-8">
-  <base href="/proxy.php/">
   <title>Bot Dashboard</title>
-  <style>body{font-family:sans-serif;max-width:800px;margin:auto;padding:1rem}
-  .status{color:${status==='UP'?'green':'red'};font-size:1.5rem}
-  pre{background:#eee;padding:1rem;overflow:auto;height:200px}
-  table{width:100%;border-collapse:collapse}
-  th,td{border:1px solid #ccc;padding:.5rem;text-align:left}
+  <style>
+    body{font-family:sans-serif;max-width:600px;margin:auto;padding:1rem;background:#fafafa}
+    h1{margin-bottom:0.5rem}
+    .status{font-weight:bold;color:${status==='UP'?'green':'red'}}
+    .info{margin:0.5rem 0}
+    button, input[type="checkbox"]{margin-right:0.5rem}
+    .controls{margin:1rem 0}
+    .panel{background:#fff;padding:1rem;margin:1rem 0;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
+    pre{background:#eee;padding:0.5rem;overflow:auto;max-height:200px}
+    table{width:100%;border-collapse:collapse}
+    th,td{border:1px solid #ddd;padding:0.5rem;text-align:left}
   </style>
 </head><body>
   <h1>🤖 Bot Monitor</h1>
-  <p>Status: <span class="status">${status}</span> (${formatDuration(since)})</p>
-  <p>Auto-Restart: <strong>${autoRestart?'ON':'OFF'}</strong></p>
-  <form method="POST" action="./control/autorestart">
-    <label>
-      <input type="checkbox" name="autoRestart" value="on" ${autoRestart?'checked':''}
-        onchange="this.form.submit()">
-      Enable Auto-Restart
-    </label>
-  </form>
-  <form method="POST" action="./control/restart"><button>🔄 Restart Bot</button></form>
-  <h2>📊 Resources</h2>
-  <table>
-    <tr><th>CPU Load</th><td>${load}</td></tr>
-    <tr><th>Memory</th><td>${mem}</td></tr>
-    <tr><th>Disk</th><td>${disk}</td></tr>
-  </table>
-  <h2>📝 Logs</h2><pre>${logs}</pre>
+  <div class="panel">
+    <div class="info">Status: <span class="status">${status}</span> (${formatDuration(since)})</div>
+    <div class="info">Version: <code>${version}</code></div>
+    <div class="info">CPU Load: ${load} | Memory: ${mem} | Disk: ${disk}</div>
+  </div>
+  <div class="controls panel">
+    <form style="display:inline" method="POST" action="./control/autorestart">
+      <label><input type="checkbox" name="autoRestart" value="on" ${autoRestart?'checked':''}
+        onchange="this.form.submit()"> Auto-Restart</label>
+    </form>
+    <form style="display:inline" method="POST" action="./control/restart">
+      <button>🔄 Restart</button>
+    </form>
+    <form style="display:inline" method="POST" action="./control/update">
+      <button>🆕 Update Now</button>
+    </form>
+  </div>
+  <div class="panel"><strong>Logs (last ${MAX_LOG_LINES} lines):</strong>
+    <pre>${logs}</pre>
+  </div>
 </body></html>`);
 });
 
@@ -191,13 +217,20 @@ app.post('/control/restart', requireAuth, (req,res)=>{
   res.redirect(req.headers.referer||'.');
 });
 
-// Auto-restart endpoint
+// Auto-restart toggle
 app.post('/control/autorestart',(req,res)=>{
   autoRestart=req.body.autoRestart==='on';
+  log('INFO','Monitor',`Auto-Restart → ${autoRestart}`);
   res.redirect(req.headers.referer||'.');
 });
 
-// Start server (localhost only)
+// Manual update endpoint
+app.post('/control/update', requireAuth, (req,res)=>{
+  manualUpdate();
+  res.redirect(req.headers.referer||'.');
+});
+
+// Start server
 app.listen(PORT,'localhost',()=>{
   log('INFO','Monitor',`Server listening on http://localhost:${PORT}`);
   startBot();
