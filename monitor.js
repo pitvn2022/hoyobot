@@ -25,7 +25,7 @@ function requireAuth(req, res, next) {
 }
 
 // --- Settings ---
-const PORT                 = config.health?.port || 3001;
+const PORT                 = config.health?.port || 5010;
 const UPDATE_INTERVAL_DAYS = config.health?.updateIntervalDays ?? 1;
 const THROTTLE_MINUTES     = config.health?.throttleMinutes ?? 10;
 const LOG_FILE             = config.health?.logFile || 'hoyobot.log';
@@ -52,7 +52,6 @@ function logError(mod,err){
   console.error(`${new Date().toISOString().replace('T',' ').replace(/\..+$/,'')} <ERROR:${mod}> ${err.stack||err.message}`);
 }
 
-// --- Notifications w/ throttle ---
 async function notifyAll(detail,status){
   const now=Date.now();
   if(now - (lastNotify[status]||0) < THROTTLE_MINUTES*60e3) return;
@@ -125,16 +124,13 @@ function getResources(){
   let disk='n/a';
   try{
     const df=execSync('df -k .').toString().split('\n')[1].split(/\s+/);
-    disk=`${(df[2]/1048576).toFixed(1)}GiB/${((+df[2]+ +df[3])/1048576).toFixed(1)}GiB`;
+    disk=`${(df[2]/1048576).toFixed(1)}GiB / ${((+df[2]+ +df[3])/1048576).toFixed(1)}GiB`;
   }catch{}
-  return {load,mem:`${free}MiB/${total}MiB`,disk};
+  return {load,mem:`${free}MiB / ${total}MiB`,disk};
 }
 function tailLogs(){
-  try{
-    return fs.readFileSync(logFilePath,'utf-8').trim().split('\n').slice(-MAX_LOG_LINES).join('\n');
-  }catch{
-    return 'Cannot read log file';
-  }
+  try{return fs.readFileSync(logFilePath,'utf-8').trim().split('\n').slice(-MAX_LOG_LINES).join('\n');}
+  catch{return 'Cannot read log file';}
 }
 function formatDuration(ms){
   const s=Math.floor(ms/1e3)%60,
@@ -148,10 +144,8 @@ function formatDuration(ms){
 const app=express();
 app.use(express.urlencoded({extended:false}));
 
-// --- Router ---
-const router=express.Router();
-
-router.get('/',(req,res)=>{
+// Dashboard at root
+app.get('/',(req,res)=>{
   const now=Date.now(), status=isUp?'UP':'DOWN';
   const since=isUp?now-lastStartTime:now-(lastExitTime||now);
   const {load,mem,disk}=getResources();
@@ -180,22 +174,20 @@ th,td{border:1px solid #ccc;padding:.5rem;text-align:left}
 </body></html>`);
 });
 
-router.post('/control/restart', requireAuth, (req,res)=>{
+// Restart endpoint
+app.post('/control/restart',requireAuth,(req,res)=>{
   if(botProcess&&isUp) botProcess.kill('SIGTERM');
   setTimeout(startBot,1000);
   res.redirect(req.headers.referer||'.');
 });
 
-router.post('/control/autorestart',(req,res)=>{
+// Auto-restart endpoint
+app.post('/control/autorestart',(req,res)=>{
   autoRestart=req.body.autoRestart==='on';
   res.redirect(req.headers.referer||'.');
 });
 
-// Mount at both root and /proxy.php
-app.use('/', router);
-app.use('/proxy.php', router);
-
-// Listen on localhost (for reverse proxy)
+// Start server
 app.listen(PORT,'localhost',()=>{
   log('INFO','Monitor',`Server listening on http://localhost:${PORT}`);
   startBot();
